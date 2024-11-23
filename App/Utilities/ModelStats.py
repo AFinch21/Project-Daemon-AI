@@ -2,7 +2,7 @@ import psutil
 import torch
 
 
-class ModelStatistics():
+class ModelStatistics:
     def __init__(self, model_id):
         self.model_id = model_id
         

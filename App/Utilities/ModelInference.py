@@ -1,9 +1,11 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import  TextStreamer
+from transformers import TextIteratorStreamer
+from threading import Thread
 
 class ModelInference:
     
-    def __init__(self, model_id, model_kwargs=None, tokenizer_kwargs=None, streamer_kwargs=None, revision="main"):
+    def __init__(self, model_id, threaded_streaming = False, model_kwargs=None, tokenizer_kwargs=None, streamer_kwargs=None, revision="main"):
         self.model_id = model_id
         self.revision = revision
         self.model_kwargs = model_kwargs if model_kwargs is not None else {}
@@ -13,7 +15,8 @@ class ModelInference:
         # Load model and tokenizer
         self.model = self.load_model()
         self.tokenizer = self.load_tokenizer()
-        self.streamer = self.load_streamer()
+        self.streamer = self.load_streamer(threaded_streaming)
+        self.threaded_streaming = threaded_streaming
 
     def load_model(self):
         model = AutoModelForCausalLM.from_pretrained(
@@ -33,8 +36,16 @@ class ModelInference:
         return tokenizer
     
     
-    def load_streamer(self):
+    def load_streamer(self, threaded_streaming):
         
+        
+        if threaded_streaming:
+            streamer = TextIteratorStreamer(
+            self.tokenizer,
+            skip_prompt = True,
+            **self.streamer_kwargs)
+            return streamer
+            
         streamer = TextStreamer(
             self.tokenizer,
             skip_prompt = True,
@@ -49,7 +60,7 @@ class ModelInference:
         return input_ids
     
     def infer(self, messages : dict, temperature : float = 0.5, top_p : float = 0.95, top_k : float = 40, max_new_tokens : int = 256, stream : bool = False, remove_prompt : bool = False, add_generation_prompt : bool = False, skip_special_tokens : bool = False, **kwargs):
-                        
+                               
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -57,6 +68,28 @@ class ModelInference:
         )
         model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
 
+        if self.threaded_streaming:
+
+            # Step 3: Start a separate thread to handle the model generation with streaming
+            thread = Thread(target=self.model.generate, kwargs={
+                "input_ids": model_inputs['input_ids'],
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "streamer": self.streamer
+            })
+            thread.start()
+
+            # Step 4: Stream the output in chunks as it becomes available
+            response = ""
+            for partial_output in self.streamer:
+                response += partial_output  # Incrementally add the generated text
+                # You can use this `response` to send data to the front-end in real-time
+
+            # Wait for the thread to finish
+            thread.join()
+            
 
 
         generated_ids = self.model.generate(
